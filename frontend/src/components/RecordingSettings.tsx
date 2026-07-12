@@ -12,6 +12,7 @@ export interface RecordingPreferences {
   file_format: string;
   preferred_mic_device: string | null;
   preferred_system_device: string | null;
+  auto_detect_teams_meetings: boolean;
 }
 
 interface RecordingSettingsProps {
@@ -24,11 +25,17 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
     auto_save: true,
     file_format: 'mp4',
     preferred_mic_device: null,
-    preferred_system_device: null
+    preferred_system_device: null,
+    auto_detect_teams_meetings: false
   });
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [showRecordingNotification, setShowRecordingNotification] = useState(true);
+  const [isMacOS, setIsMacOS] = useState(false);
+
+  useEffect(() => {
+    setIsMacOS(navigator.userAgent.toLowerCase().includes('mac'));
+  }, []);
 
   // Load recording preferences on component mount
   useEffect(() => {
@@ -79,6 +86,15 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
     });
   };
 
+  const handleMeetingDetectionToggle = async (enabled: boolean) => {
+    const newPreferences = { ...preferences, auto_detect_teams_meetings: enabled };
+    setPreferences(newPreferences);
+    await savePreferences(newPreferences, false);
+    await Analytics.track('teams_auto_recording_toggled', {
+      enabled: enabled.toString()
+    });
+  };
+
   const handleDeviceChange = async (devices: SelectedDevices) => {
     const newPreferences = {
       ...preferences,
@@ -121,7 +137,7 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
     }
   };
 
-  const savePreferences = async (prefs: RecordingPreferences) => {
+  const savePreferences = async (prefs: RecordingPreferences, showDeviceToast = true) => {
     setSaving(true);
     try {
       await invoke('set_recording_preferences', { preferences: prefs });
@@ -130,9 +146,13 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
       // Show success toast with device details
       const micDevice = prefs.preferred_mic_device || 'Default';
       const systemDevice = prefs.preferred_system_device || 'Default';
-      toast.success("Device preferences saved", {
-        description: `Microphone: ${micDevice}, System Audio: ${systemDevice}`
-      });
+      if (showDeviceToast) {
+        toast.success("Device preferences saved", {
+          description: `Microphone: ${micDevice}, System Audio: ${systemDevice}`
+        });
+      } else {
+        toast.success('Automatic meeting detection preference saved');
+      }
     } catch (error) {
       console.error('Failed to save recording preferences:', error);
       toast.error("Failed to save device preferences", {
@@ -175,6 +195,23 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
           disabled={saving}
         />
       </div>
+
+      {/* macOS Microsoft Teams meeting detection */}
+      {isMacOS && (
+        <div className="flex items-center justify-between p-4 border rounded-lg">
+          <div className="flex-1 pr-4">
+            <div className="font-medium">Automatically record Microsoft Teams meetings</div>
+            <div className="text-sm text-gray-600">
+              Detect active Teams calls using macOS system activity and automatically start and stop recording. Detection is best-effort.
+            </div>
+          </div>
+          <Switch
+            checked={preferences.auto_detect_teams_meetings}
+            onCheckedChange={handleMeetingDetectionToggle}
+            disabled={saving}
+          />
+        </div>
+      )}
 
       {/* Folder Location - Only shown when auto_save is enabled */}
       {preferences.auto_save && (

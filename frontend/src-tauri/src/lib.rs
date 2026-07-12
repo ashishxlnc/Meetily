@@ -47,6 +47,7 @@ pub mod onboarding;
 pub mod openai;
 pub mod anthropic;
 pub mod groq;
+pub mod meeting_detection;
 pub mod openrouter;
 pub mod parakeet_engine;
 pub mod state;
@@ -416,6 +417,7 @@ pub fn run() {
             None::<notifications::manager::NotificationManager<tauri::Wry>>,
         )) as NotificationManagerState<tauri::Wry>)
         .manage(audio::init_system_audio_state())
+        .manage(meeting_detection::MeetingDetectionManager::new(false))
         .manage(summary::summary_engine::ModelManagerState(Arc::new(tokio::sync::Mutex::new(None))))
         .setup(|_app| {
             log::info!("Application setup complete");
@@ -424,6 +426,21 @@ pub fn run() {
             if let Err(e) = tray::create_tray(_app.handle()) {
                 log::error!("Failed to create system tray: {}", e);
             }
+
+            // Start the native meeting detector. It remains dormant unless the
+            // opt-in recording preference is enabled.
+            let app_for_detection = _app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let manager = app_for_detection
+                    .state::<Arc<meeting_detection::MeetingDetectionManager>>()
+                    .inner()
+                    .clone();
+                match audio::recording_preferences::load_recording_preferences(&app_for_detection).await {
+                    Ok(preferences) => manager.set_enabled(preferences.auto_detect_teams_meetings),
+                    Err(error) => log::warn!("Failed to load meeting detection preference: {}", error),
+                }
+                manager.run(app_for_detection).await;
+            });
 
             // Initialize notification system with proper defaults
             log::info!("Initializing notification system...");
@@ -601,6 +618,7 @@ pub fn run() {
             start_audio_level_monitoring,
             stop_audio_level_monitoring,
             is_audio_level_monitoring,
+            meeting_detection::get_meeting_detection_state,
             // Recording pause/resume commands
             audio::recording_commands::pause_recording,
             audio::recording_commands::resume_recording,

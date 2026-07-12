@@ -1,7 +1,9 @@
 use log::{info, warn};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use std::sync::Arc;
 use tauri::{AppHandle, Runtime};
+use tauri::Manager;
 use tauri_plugin_store::StoreExt;
 
 use anyhow::Result;
@@ -20,6 +22,8 @@ pub struct RecordingPreferences {
     pub preferred_mic_device: Option<String>,
     #[serde(default)]
     pub preferred_system_device: Option<String>,
+    #[serde(default)]
+    pub auto_detect_teams_meetings: bool,
     #[cfg(target_os = "macos")]
     #[serde(default)]
     pub system_audio_backend: Option<String>,
@@ -33,6 +37,7 @@ impl Default for RecordingPreferences {
             file_format: "mp4".to_string(),
             preferred_mic_device: None,
             preferred_system_device: None,
+            auto_detect_teams_meetings: false,
             #[cfg(target_os = "macos")]
             system_audio_backend: Some("coreaudio".to_string()),
         }
@@ -194,7 +199,13 @@ pub async fn set_recording_preferences<R: Runtime>(
 ) -> Result<(), String> {
     save_recording_preferences(&app, &preferences)
         .await
-        .map_err(|e| format!("Failed to save recording preferences: {}", e))
+        .map_err(|e| format!("Failed to save recording preferences: {}", e))?;
+
+    if let Some(manager) = app.try_state::<Arc<crate::meeting_detection::MeetingDetectionManager>>() {
+        manager.set_enabled(preferences.auto_detect_teams_meetings);
+    }
+
+    Ok(())
 }
 
 #[tauri::command]
@@ -384,4 +395,3 @@ pub async fn get_audio_backend_info() -> Result<Vec<BackendInfo>, String> {
         }])
     }
 }
-

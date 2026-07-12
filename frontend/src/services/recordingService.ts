@@ -22,6 +22,13 @@ export interface RecordingStoppedPayload {
   meeting_name?: string;
 }
 
+export interface MeetingDetectionState {
+  provider: 'microsoft-teams';
+  active: boolean;
+  processId?: number;
+  assertionTypes: string[];
+}
+
 /**
  * Recording Service
  * Singleton service for managing recording lifecycle operations
@@ -49,6 +56,11 @@ export class RecordingService {
    */
   async getRecordingMeetingName(): Promise<string | null> {
     return invoke<string | null>('get_recording_meeting_name');
+  }
+
+  /** Get the last confirmed native meeting-detection state. */
+  async getMeetingDetectionState(): Promise<MeetingDetectionState> {
+    return invoke<MeetingDetectionState>('get_meeting_detection_state');
   }
 
   /**
