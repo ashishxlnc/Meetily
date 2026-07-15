@@ -8,7 +8,8 @@ use crate::{
     database::{
         models::MeetingModel,
         repositories::{
-            meeting::MeetingsRepository, setting::SettingsRepository,
+            meeting::{MeetingListRow, MeetingsRepository},
+            setting::SettingsRepository,
             transcript::TranscriptsRepository,
         },
     },
@@ -30,6 +31,9 @@ pub struct ApiResponse<T> {
 pub struct Meeting {
     pub id: String,
     pub title: String,
+    pub created_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration_seconds: Option<f64>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -329,18 +333,26 @@ pub async fn api_get_meetings<R: Runtime>(
         auth_token.is_some()
     );
     let pool = state.db_manager.pool();
-    let meetings: Result<Vec<MeetingModel>, sqlx::Error> =
+    let meetings: Result<Vec<MeetingListRow>, sqlx::Error> =
         MeetingsRepository::get_meetings(pool).await;
 
     match meetings {
-        Ok(meeting_models) => {
-            log_info!("Successfully got {} meetings", meeting_models.len());
+        Ok(meeting_rows) => {
+            log_info!("Successfully got {} meetings", meeting_rows.len());
 
-            let result: Vec<Meeting> = meeting_models
+            let result: Vec<Meeting> = meeting_rows
                 .into_iter()
-                .map(|m| Meeting {
-                    id: m.id,
-                    title: m.title,
+                .map(|m| {
+                    let duration_seconds = match (m.start_offset, m.end_offset) {
+                        (Some(start), Some(end)) if end > start => Some(end - start),
+                        _ => None,
+                    };
+                    Meeting {
+                        id: m.id,
+                        title: m.title,
+                        created_at: m.created_at.0.to_rfc3339(),
+                        duration_seconds,
+                    }
                 })
                 .collect();
             Ok(result)

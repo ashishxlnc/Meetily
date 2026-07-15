@@ -1,17 +1,37 @@
 use crate::api::{MeetingDetails, MeetingTranscript};
-use crate::database::models::{MeetingModel, Transcript};
+use crate::database::models::{DateTimeUtc, MeetingModel, Transcript};
 use chrono::Utc;
-use sqlx::{Connection, Error as SqlxError, SqliteConnection, SqlitePool};
+use sqlx::{Connection, Error as SqlxError, FromRow, SqliteConnection, SqlitePool};
 use tracing::{error, info};
 
 pub struct MeetingsRepository;
 
+/// Meeting row for the list view, with a recording duration aggregated
+/// from its transcripts' audio sync fields.
+#[derive(Debug, Clone, FromRow)]
+pub struct MeetingListRow {
+    pub id: String,
+    pub title: String,
+    pub created_at: DateTimeUtc,
+    pub updated_at: DateTimeUtc,
+    pub folder_path: Option<String>,
+    pub start_offset: Option<f64>,
+    pub end_offset: Option<f64>,
+}
+
 impl MeetingsRepository {
-    pub async fn get_meetings(pool: &SqlitePool) -> Result<Vec<MeetingModel>, sqlx::Error> {
-        let meetings =
-            sqlx::query_as::<_, MeetingModel>("SELECT * FROM meetings ORDER BY created_at DESC")
-                .fetch_all(pool)
-                .await?;
+    pub async fn get_meetings(pool: &SqlitePool) -> Result<Vec<MeetingListRow>, sqlx::Error> {
+        let meetings = sqlx::query_as::<_, MeetingListRow>(
+            "SELECT m.id, m.title, m.created_at, m.updated_at, m.folder_path,
+                    MIN(t.audio_start_time) AS start_offset,
+                    MAX(t.audio_end_time) AS end_offset
+             FROM meetings m
+             LEFT JOIN transcripts t ON t.meeting_id = m.id
+             GROUP BY m.id
+             ORDER BY m.created_at DESC",
+        )
+        .fetch_all(pool)
+        .await?;
         Ok(meetings)
     }
 

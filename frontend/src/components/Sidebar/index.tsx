@@ -1,10 +1,12 @@
 'use client';
 
 import React, { useState, useMemo, useEffect, useCallback } from 'react';
-import { ChevronDown, ChevronRight, File, Settings, ChevronLeftCircle, ChevronRightCircle, Calendar, StickyNote, Home, Trash2, Mic, Square, Plus, Search, Pencil, NotebookPen, SearchIcon, X, Upload } from 'lucide-react';
+import { ChevronDown, ChevronRight, File, Settings, ChevronLeftCircle, ChevronRightCircle, Calendar, StickyNote, Home, Trash2, Mic, Square, Plus, Search, Pencil, NotebookPen, SearchIcon, X, Upload, Filter } from 'lucide-react';
+import { format, parseISO, isValid, isToday, isYesterday, isThisWeek, isThisMonth, startOfDay, endOfDay } from 'date-fns';
 import { useRouter, usePathname } from 'next/navigation';
 import { useSidebar } from './SidebarProvider';
 import type { CurrentMeeting } from '@/components/Sidebar/SidebarProvider';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { ConfirmationModal } from '../ConfirmationModel/confirmation-modal';
 import { ModelConfig } from '@/components/ModelSettingsModal';
 import { SettingTabs } from '../SettingTabs';
@@ -39,6 +41,42 @@ interface SidebarItem {
   children?: SidebarItem[];
 }
 
+type DateFilterPreset = 'today' | 'week' | 'month' | 'custom' | null;
+
+interface DateFilterState {
+  preset: DateFilterPreset;
+  from?: string;
+  to?: string;
+}
+
+const formatMeetingTimestamp = (dateStr?: string): string | null => {
+  if (!dateStr) return null;
+  const date = parseISO(dateStr);
+  if (!isValid(date)) return null;
+  return format(date, 'MMM d, h:mm a');
+};
+
+const formatMeetingDuration = (seconds?: number | null): string | null => {
+  if (seconds == null || seconds <= 0) return null;
+  const totalMinutes = Math.round(seconds / 60);
+  if (totalMinutes < 1) return '<1 min';
+  if (totalMinutes < 60) return `${totalMinutes} min`;
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
+};
+
+const meetingGroupLabel = (dateStr?: string): string => {
+  if (!dateStr) return 'Older';
+  const date = parseISO(dateStr);
+  if (!isValid(date)) return 'Older';
+  if (isToday(date)) return 'Today';
+  if (isYesterday(date)) return 'Yesterday';
+  if (isThisWeek(date, { weekStartsOn: 1 })) return 'This Week';
+  if (isThisMonth(date)) return 'This Month';
+  return format(date, 'MMMM yyyy');
+};
+
 const Sidebar: React.FC = () => {
   const router = useRouter();
   const pathname = usePathname();
@@ -63,6 +101,8 @@ const Sidebar: React.FC = () => {
   const { betaFeatures } = useConfig();
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set(['meetings']));
   const [searchQuery, setSearchQuery] = useState<string>('');
+  const [dateFilter, setDateFilter] = useState<DateFilterState>({ preset: null });
+  const [isFilterOpen, setIsFilterOpen] = useState(false);
   const [showModelSettings, setShowModelSettings] = useState(false);
   const [modelConfig, setModelConfig] = useState<ModelConfig>({
     provider: 'ollama',
@@ -317,6 +357,74 @@ const Sidebar: React.FC = () => {
     }
   }, [sidebarItems, searchQuery, searchResults, expandedFolders]);
 
+  const meetingsById = useMemo(() => {
+    const map = new Map<string, CurrentMeeting>();
+    meetings.forEach(m => map.set(m.id, m));
+    return map;
+  }, [meetings]);
+
+  const isWithinDateFilter = useCallback((dateStr?: string): boolean => {
+    if (!dateFilter.preset) return true;
+    if (!dateStr) return false;
+    const date = parseISO(dateStr);
+    if (!isValid(date)) return false;
+
+    if (dateFilter.preset === 'today') return isToday(date);
+    if (dateFilter.preset === 'week') return isThisWeek(date, { weekStartsOn: 1 });
+    if (dateFilter.preset === 'month') return isThisMonth(date);
+    if (dateFilter.preset === 'custom') {
+      const from = dateFilter.from ? startOfDay(parseISO(dateFilter.from)) : null;
+      const to = dateFilter.to ? endOfDay(parseISO(dateFilter.to)) : null;
+      if (from && date < from) return false;
+      if (to && date > to) return false;
+      return Boolean(from || to);
+    }
+    return true;
+  }, [dateFilter]);
+
+  const dateFilterLabel = useMemo(() => {
+    switch (dateFilter.preset) {
+      case 'today': return 'Today';
+      case 'week': return 'This Week';
+      case 'month': return 'This Month';
+      case 'custom':
+        if (dateFilter.from && dateFilter.to) return `${dateFilter.from} → ${dateFilter.to}`;
+        if (dateFilter.from) return `From ${dateFilter.from}`;
+        if (dateFilter.to) return `Until ${dateFilter.to}`;
+        return 'Custom range';
+      default:
+        return 'Filter';
+    }
+  }, [dateFilter]);
+
+  // Group the meeting list into Today/Yesterday/This Week/This Month/Older
+  // buckets, applying the date-range filter. Relies on the backend already
+  // returning meetings ordered by created_at DESC, so buckets come out
+  // newest-first without needing to re-sort here.
+  const groupedMeetingItems = useMemo(() => {
+    const meetingsFolder = filteredSidebarItems.find(item => item.id === 'meetings');
+    const children = meetingsFolder?.children ?? [];
+
+    const filtered = children.filter(child =>
+      isWithinDateFilter(meetingsById.get(child.id)?.created_at)
+    );
+
+    const groups: { label: string; items: SidebarItem[] }[] = [];
+    const indexByLabel = new Map<string, number>();
+
+    filtered.forEach(child => {
+      const label = meetingGroupLabel(meetingsById.get(child.id)?.created_at);
+      let idx = indexByLabel.get(label);
+      if (idx === undefined) {
+        idx = groups.length;
+        indexByLabel.set(label, idx);
+        groups.push({ label, items: [] });
+      }
+      groups[idx].items.push(child);
+    });
+
+    return groups;
+  }, [filteredSidebarItems, meetingsById, isWithinDateFilter]);
 
   const handleDelete = async (itemId: string) => {
     console.log('Deleting item:', itemId);
@@ -561,6 +669,10 @@ const Sidebar: React.FC = () => {
     const matchingResult = isMeetingItem ? findMatchingSnippet(item.id) : null;
     const hasTranscriptMatch = !!matchingResult;
 
+    const meetingMeta = isMeetingItem ? meetingsById.get(item.id) : undefined;
+    const timestampLabel = meetingMeta ? formatMeetingTimestamp(meetingMeta.created_at) : null;
+    const durationLabel = meetingMeta ? formatMeetingDuration(meetingMeta.duration_seconds) : null;
+
     if (isCollapsed) return null;
 
     return (
@@ -642,6 +754,15 @@ const Sidebar: React.FC = () => {
                 )}
               </div>
 
+              {/* Start time + duration */}
+              {(timestampLabel || durationLabel) && (
+                <div className="ml-8 text-xs text-gray-400">
+                  {timestampLabel}
+                  {timestampLabel && durationLabel ? ' · ' : ''}
+                  {durationLabel}
+                </div>
+              )}
+
               {/* Show transcript match snippet if available */}
               {hasTranscriptMatch && (
                 <div className="mt-1 ml-8 text-xs text-gray-500 bg-yellow-50 p-1.5 rounded border border-yellow-100 line-clamp-2">
@@ -713,6 +834,85 @@ const Sidebar: React.FC = () => {
                     }
                   </InputGroup>
                 </div>
+
+                <div className="flex items-center gap-1">
+                  <Popover open={isFilterOpen} onOpenChange={setIsFilterOpen}>
+                    <PopoverTrigger asChild>
+                      <button
+                        className={`flex items-center gap-1 px-2 py-1 text-xs rounded-md border transition-colors ${dateFilter.preset
+                          ? 'border-blue-300 bg-blue-50 text-blue-700'
+                          : 'border-gray-200 text-gray-500 hover:bg-gray-50'
+                          }`}
+                      >
+                        <Filter className="w-3.5 h-3.5" />
+                        <span>{dateFilterLabel}</span>
+                      </button>
+                    </PopoverTrigger>
+                    <PopoverContent align="start" className="w-64 p-3">
+                      <div className="space-y-3">
+                        <div>
+                          <div className="text-xs font-semibold text-gray-500 mb-1.5">Filter by date</div>
+                          <div className="flex flex-wrap gap-1">
+                            {([
+                              ['today', 'Today'],
+                              ['week', 'This Week'],
+                              ['month', 'This Month'],
+                            ] as const).map(([preset, label]) => (
+                              <button
+                                key={preset}
+                                onClick={() => setDateFilter(
+                                  dateFilter.preset === preset ? { preset: null } : { preset }
+                                )}
+                                className={`px-2 py-1 text-xs rounded-md border transition-colors ${dateFilter.preset === preset
+                                  ? 'bg-blue-600 text-white border-blue-600'
+                                  : 'border-gray-200 text-gray-600 hover:bg-gray-50'
+                                  }`}
+                              >
+                                {label}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+
+                        <div className="pt-2 border-t border-gray-100 space-y-1.5">
+                          <div className="text-xs font-medium text-gray-500">Custom range</div>
+                          <div className="flex items-center gap-1">
+                            <input
+                              type="date"
+                              value={dateFilter.from ?? ''}
+                              onChange={(e) => setDateFilter({
+                                preset: 'custom',
+                                from: e.target.value || undefined,
+                                to: dateFilter.to,
+                              })}
+                              className="flex-1 min-w-0 text-xs border border-gray-200 rounded px-1.5 py-1"
+                            />
+                            <span className="text-xs text-gray-400 flex-shrink-0">to</span>
+                            <input
+                              type="date"
+                              value={dateFilter.to ?? ''}
+                              onChange={(e) => setDateFilter({
+                                preset: 'custom',
+                                from: dateFilter.from,
+                                to: e.target.value || undefined,
+                              })}
+                              className="flex-1 min-w-0 text-xs border border-gray-200 rounded px-1.5 py-1"
+                            />
+                          </div>
+                        </div>
+
+                        {dateFilter.preset && (
+                          <button
+                            onClick={() => setDateFilter({ preset: null })}
+                            className="w-full text-xs text-red-600 hover:text-red-700 pt-1"
+                          >
+                            Clear filter
+                          </button>
+                        )}
+                      </div>
+                    </PopoverContent>
+                  </Popover>
+                </div>
               </div>
             )}
           </div>
@@ -762,7 +962,24 @@ const Sidebar: React.FC = () => {
                   .filter(item => item.type === 'folder' && expandedFolders.has(item.id) && item.children)
                   .map(item => (
                     <div key={`${item.id}-children`} className="mx-3">
-                      {item.children!.map(child => renderItem(child, 1))}
+                      {item.id === 'meetings' ? (
+                        groupedMeetingItems.length > 0 ? (
+                          groupedMeetingItems.map(group => (
+                            <div key={group.label} className="mb-2">
+                              <div className="px-3 pt-2 pb-1 text-xs font-semibold text-gray-400 uppercase tracking-wide">
+                                {group.label}
+                              </div>
+                              {group.items.map(child => renderItem(child, 1))}
+                            </div>
+                          ))
+                        ) : (
+                          <div className="px-3 py-6 text-sm text-gray-400 text-center">
+                            No meetings match your filters
+                          </div>
+                        )
+                      ) : (
+                        item.children!.map(child => renderItem(child, 1))
+                      )}
                     </div>
                   ))}
               </div>
