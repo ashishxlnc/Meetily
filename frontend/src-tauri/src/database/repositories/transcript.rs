@@ -1,5 +1,6 @@
 use crate::api::{TranscriptSearchResult, TranscriptSegment};
-use chrono::Utc;
+use crate::audio::recording_saver::MeetingMetadata;
+use chrono::{DateTime, Utc};
 use sqlx::{Connection, Error as SqlxError, SqlitePool};
 use tracing::{error, info};
 use uuid::Uuid;
@@ -7,6 +8,20 @@ use uuid::Uuid;
 pub struct TranscriptsRepository;
 
 impl TranscriptsRepository {
+    /// Reads the true wall-clock recording-start time from the meeting folder's
+    /// metadata.json (written by `recording_saver::initialize_meeting_folder` when
+    /// the recording begins). Falls back to `Utc::now()` if the folder/file is
+    /// missing or unparseable (e.g. crash-recovery saves without a folder).
+    fn resolve_meeting_start_time(folder_path: &Option<String>) -> DateTime<Utc> {
+        folder_path
+            .as_ref()
+            .and_then(|folder| std::fs::read_to_string(std::path::Path::new(folder).join("metadata.json")).ok())
+            .and_then(|contents| serde_json::from_str::<MeetingMetadata>(&contents).ok())
+            .and_then(|metadata| DateTime::parse_from_rfc3339(&metadata.created_at).ok())
+            .map(|parsed| parsed.with_timezone(&Utc))
+            .unwrap_or_else(Utc::now)
+    }
+
     /// Saves a new meeting and its associated transcript segments.
     /// This function uses a transaction to ensure that either both the meeting
     /// and all its transcripts are saved, or none of them are.
@@ -21,7 +36,8 @@ impl TranscriptsRepository {
         let mut conn = pool.acquire().await?;
         let mut transaction = conn.begin().await?;
 
-        let now = Utc::now();
+        let started_at = Self::resolve_meeting_start_time(&folder_path);
+        let saved_at = Utc::now();
 
         // 1. Create the new meeting
         let result = sqlx::query(
@@ -29,8 +45,8 @@ impl TranscriptsRepository {
         )
         .bind(&meeting_id)
         .bind(meeting_title)
-        .bind(now)
-        .bind(now)
+        .bind(started_at)
+        .bind(saved_at)
         .bind(&folder_path)
         .execute(&mut *transaction)
         .await;
@@ -142,5 +158,137 @@ impl TranscriptsRepository {
             }
             None => transcript.chars().take(200).collect(), // Fallback to the start of the transcript
         }
+    }
+}
+
+#[cfg(test)]
+mod verify_meeting_start_time {
+    use super::*;
+    use crate::audio::recording_saver::{DeviceInfo, MeetingMetadata};
+    use crate::database::manager::DatabaseManager;
+    use chrono::Duration;
+
+    #[tokio::test]
+    async fn created_at_reflects_recording_start_not_save_time() {
+        let tmp = std::env::temp_dir().join(format!("meetily-verify-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        // Simulate what recording_saver::initialize_meeting_folder writes at the
+        // moment recording actually starts: a metadata.json with a created_at
+        // timestamp well in the past relative to "now" (the save-time bug this
+        // fix addresses).
+        let recording_start = Utc::now() - Duration::minutes(37);
+        let metadata = MeetingMetadata {
+            version: "1.0".to_string(),
+            meeting_id: None,
+            meeting_name: Some("Verify Meeting".to_string()),
+            created_at: recording_start.to_rfc3339(),
+            completed_at: Some(Utc::now().to_rfc3339()),
+            duration_seconds: Some(120.0),
+            devices: DeviceInfo { microphone: None, system_audio: None },
+            audio_file: "audio.mp4".to_string(),
+            transcript_file: "transcripts.json".to_string(),
+            sample_rate: 48000,
+            status: "completed".to_string(),
+        };
+        std::fs::write(
+            tmp.join("metadata.json"),
+            serde_json::to_string_pretty(&metadata).unwrap(),
+        )
+        .unwrap();
+
+        let db_path = tmp.join("test.sqlite");
+        let db_manager = DatabaseManager::new(
+            db_path.to_str().unwrap(),
+            tmp.join("nonexistent-legacy.db").to_str().unwrap(),
+        )
+        .await
+        .unwrap();
+        let pool = db_manager.pool();
+
+        let before_save = Utc::now();
+        let meeting_id = TranscriptsRepository::save_transcript(
+            pool,
+            "Verify Meeting",
+            &[],
+            Some(tmp.to_str().unwrap().to_string()),
+        )
+        .await
+        .unwrap();
+        let after_save = Utc::now();
+
+        let (created_at, updated_at): (DateTime<Utc>, DateTime<Utc>) =
+            sqlx::query_as("SELECT created_at, updated_at FROM meetings WHERE id = ?")
+                .bind(&meeting_id)
+                .fetch_one(pool)
+                .await
+                .unwrap();
+
+        println!(
+            "recording_start={} created_at={} updated_at={} save_window=[{}, {}]",
+            recording_start, created_at, updated_at, before_save, after_save
+        );
+
+        // The bug: created_at used to be stamped with save-time `Utc::now()`,
+        // which would fall inside [before_save, after_save] — 37 minutes after
+        // the real recording start. Assert it instead matches metadata.json.
+        assert!(
+            (created_at - recording_start).num_seconds().abs() < 2,
+            "created_at ({}) should match metadata.json recording start ({}), not save time",
+            created_at,
+            recording_start
+        );
+        assert!(
+            created_at < before_save - Duration::minutes(30),
+            "created_at ({}) should predate the save-time window, proving it is NOT save-time Utc::now()",
+            created_at
+        );
+        // updated_at should still reflect the actual save moment.
+        assert!(
+            updated_at >= before_save && updated_at <= after_save,
+            "updated_at ({}) should fall within the save-time window [{}, {}]",
+            updated_at,
+            before_save,
+            after_save
+        );
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[tokio::test]
+    async fn falls_back_to_now_when_no_folder_path() {
+        let tmp = std::env::temp_dir().join(format!("meetily-verify-{}", Uuid::new_v4()));
+        let db_path = tmp.join("test.sqlite");
+        let db_manager = DatabaseManager::new(
+            db_path.to_str().unwrap(),
+            tmp.join("nonexistent-legacy.db").to_str().unwrap(),
+        )
+        .await
+        .unwrap();
+        let pool = db_manager.pool();
+
+        let before_save = Utc::now();
+        let meeting_id =
+            TranscriptsRepository::save_transcript(pool, "No Folder Meeting", &[], None)
+                .await
+                .unwrap();
+        let after_save = Utc::now();
+
+        let (created_at,): (DateTime<Utc>,) =
+            sqlx::query_as("SELECT created_at FROM meetings WHERE id = ?")
+                .bind(&meeting_id)
+                .fetch_one(pool)
+                .await
+                .unwrap();
+
+        assert!(
+            created_at >= before_save && created_at <= after_save,
+            "with no folder_path, created_at ({}) should fall back to save-time now [{}, {}]",
+            created_at,
+            before_save,
+            after_save
+        );
+
+        std::fs::remove_dir_all(&tmp).ok();
     }
 }
