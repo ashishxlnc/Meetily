@@ -4,6 +4,7 @@ import React, { createContext, useContext, useState, useEffect } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
 import Analytics from '@/lib/analytics';
 import { invoke } from '@tauri-apps/api/core';
+import { toast } from 'sonner';
 import { useRecordingState } from '@/contexts/RecordingStateContext';
 
 
@@ -84,11 +85,19 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
 
-  // Extract fetchMeetings as a reusable function
+  // Extract fetchMeetings as a reusable function. Multiple call sites (mount,
+  // post-recording-save, crash recovery, import) can overlap; fetchMeetingsRequestId
+  // guards against an older in-flight response clobbering a newer one.
+  const fetchMeetingsRequestId = React.useRef(0);
   const fetchMeetings = React.useCallback(async () => {
     if (serverAddress) {
+      const requestId = ++fetchMeetingsRequestId.current;
       try {
         const meetings = await invoke('api_get_meetings') as Array<CurrentMeeting>;
+        if (requestId !== fetchMeetingsRequestId.current) {
+          // A newer fetchMeetings call has since been issued; discard this stale result.
+          return;
+        }
         const transformedMeetings = meetings.map((meeting: any) => ({
           id: meeting.id,
           title: meeting.title,
@@ -99,7 +108,14 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
         Analytics.trackBackendConnection(true);
       } catch (error) {
         console.error('Error fetching meetings:', error);
-        setMeetings([]);
+        // Keep the previous meeting list on failure instead of wiping it -
+        // a transient error here previously made recently-saved meetings
+        // vanish from the sidebar until the app was restarted.
+        if (requestId === fetchMeetingsRequestId.current) {
+          toast.error('Failed to refresh meeting list', {
+            description: error instanceof Error ? error.message : 'Unknown error',
+          });
+        }
         Analytics.trackBackendConnection(false, error instanceof Error ? error.message : 'Unknown error');
       }
     }
