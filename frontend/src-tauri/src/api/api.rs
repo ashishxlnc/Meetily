@@ -342,17 +342,11 @@ pub async fn api_get_meetings<R: Runtime>(
 
             let result: Vec<Meeting> = meeting_rows
                 .into_iter()
-                .map(|m| {
-                    let duration_seconds = match (m.start_offset, m.end_offset) {
-                        (Some(start), Some(end)) if end > start => Some(end - start),
-                        _ => None,
-                    };
-                    Meeting {
-                        id: m.id,
-                        title: m.title,
-                        created_at: m.created_at.0.to_rfc3339(),
-                        duration_seconds,
-                    }
+                .map(|m| Meeting {
+                    id: m.id,
+                    title: m.title,
+                    created_at: m.created_at.0.to_rfc3339(),
+                    duration_seconds: m.duration_seconds,
                 })
                 .collect();
             Ok(result)

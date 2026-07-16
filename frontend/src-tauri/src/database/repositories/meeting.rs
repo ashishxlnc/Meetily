@@ -6,8 +6,10 @@ use tracing::{error, info};
 
 pub struct MeetingsRepository;
 
-/// Meeting row for the list view, with a recording duration aggregated
-/// from its transcripts' audio sync fields.
+/// Meeting row for the list view. `duration_seconds` is denormalized onto
+/// `meetings` at write time (see `TranscriptsRepository::save_transcript`),
+/// so this is a flat, indexed read with no JOIN/aggregation against the
+/// (much larger) transcripts table.
 #[derive(Debug, Clone, FromRow)]
 pub struct MeetingListRow {
     pub id: String,
@@ -15,20 +17,15 @@ pub struct MeetingListRow {
     pub created_at: DateTimeUtc,
     pub updated_at: DateTimeUtc,
     pub folder_path: Option<String>,
-    pub start_offset: Option<f64>,
-    pub end_offset: Option<f64>,
+    pub duration_seconds: Option<f64>,
 }
 
 impl MeetingsRepository {
     pub async fn get_meetings(pool: &SqlitePool) -> Result<Vec<MeetingListRow>, sqlx::Error> {
         let meetings = sqlx::query_as::<_, MeetingListRow>(
-            "SELECT m.id, m.title, m.created_at, m.updated_at, m.folder_path,
-                    MIN(t.audio_start_time) AS start_offset,
-                    MAX(t.audio_end_time) AS end_offset
-             FROM meetings m
-             LEFT JOIN transcripts t ON t.meeting_id = m.id
-             GROUP BY m.id
-             ORDER BY m.created_at DESC",
+            "SELECT id, title, created_at, updated_at, folder_path, duration_seconds
+             FROM meetings
+             ORDER BY created_at DESC",
         )
         .fetch_all(pool)
         .await?;
@@ -291,4 +288,176 @@ async fn delete_meeting_with_transaction(
         .await?;
 
     Ok(result.rows_affected() > 0)
+}
+
+#[cfg(test)]
+mod verify_meeting_list_perf {
+    use super::*;
+    use crate::api::TranscriptSegment;
+    use crate::database::manager::DatabaseManager;
+    use crate::database::repositories::transcript::TranscriptsRepository;
+    use uuid::Uuid;
+
+    async fn temp_db() -> (std::path::PathBuf, DatabaseManager) {
+        let tmp = std::env::temp_dir().join(format!("meetily-verify-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let db_path = tmp.join("test.sqlite");
+        let db_manager = DatabaseManager::new(
+            db_path.to_str().unwrap(),
+            tmp.join("nonexistent-legacy.db").to_str().unwrap(),
+        )
+        .await
+        .unwrap();
+        (tmp, db_manager)
+    }
+
+    fn segment(id: &str, start: f64, end: f64) -> TranscriptSegment {
+        TranscriptSegment {
+            id: id.to_string(),
+            text: format!("segment {id}"),
+            timestamp: "00:00:00".to_string(),
+            audio_start_time: Some(start),
+            audio_end_time: Some(end),
+            duration: Some(end - start),
+        }
+    }
+
+    #[tokio::test]
+    async fn indexes_exist_after_migration() {
+        let (tmp, db_manager) = temp_db().await;
+        let pool = db_manager.pool();
+
+        let transcripts_indexes: Vec<(String,)> =
+            sqlx::query_as("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'transcripts'")
+                .fetch_all(pool)
+                .await
+                .unwrap();
+        assert!(
+            transcripts_indexes.iter().any(|(name,)| name == "idx_transcripts_meeting_id"),
+            "expected idx_transcripts_meeting_id to exist, found: {:?}",
+            transcripts_indexes
+        );
+
+        let meetings_indexes: Vec<(String,)> =
+            sqlx::query_as("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'meetings'")
+                .fetch_all(pool)
+                .await
+                .unwrap();
+        assert!(
+            meetings_indexes.iter().any(|(name,)| name == "idx_meetings_created_at"),
+            "expected idx_meetings_created_at to exist, found: {:?}",
+            meetings_indexes
+        );
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[tokio::test]
+    async fn get_meetings_returns_denormalized_duration_with_no_join() {
+        let (tmp, db_manager) = temp_db().await;
+        let pool = db_manager.pool();
+
+        // Segments arrive out of order and with gaps (VAD-filtered speech spans);
+        // duration should span from the earliest start to the latest end.
+        let segments = vec![
+            segment("a", 5.0, 8.0),
+            segment("b", 0.0, 3.0),
+            segment("c", 20.0, 27.5),
+        ];
+        let meeting_id = TranscriptsRepository::save_transcript(pool, "Perf Test Meeting", &segments, None)
+            .await
+            .unwrap();
+
+        let rows = MeetingsRepository::get_meetings(pool).await.unwrap();
+        let row = rows.iter().find(|r| r.id == meeting_id).unwrap();
+        assert_eq!(row.duration_seconds, Some(27.5));
+
+        // No transcripts row should be needed for this to work - drop them and confirm
+        // the list row is unaffected, proving the value truly is denormalized and the
+        // query has no live JOIN dependency on the transcripts table.
+        sqlx::query("DELETE FROM transcripts WHERE meeting_id = ?")
+            .bind(&meeting_id)
+            .execute(pool)
+            .await
+            .unwrap();
+        let rows_after_delete = MeetingsRepository::get_meetings(pool).await.unwrap();
+        let row_after_delete = rows_after_delete.iter().find(|r| r.id == meeting_id).unwrap();
+        assert_eq!(row_after_delete.duration_seconds, Some(27.5));
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[tokio::test]
+    async fn get_meetings_duration_is_none_with_no_segments() {
+        let (tmp, db_manager) = temp_db().await;
+        let pool = db_manager.pool();
+
+        let meeting_id = TranscriptsRepository::save_transcript(pool, "Empty Meeting", &[], None)
+            .await
+            .unwrap();
+
+        let rows = MeetingsRepository::get_meetings(pool).await.unwrap();
+        let row = rows.iter().find(|r| r.id == meeting_id).unwrap();
+        assert_eq!(row.duration_seconds, None);
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[tokio::test]
+    async fn migration_backfill_computes_duration_for_pre_existing_rows() {
+        let (tmp, db_manager) = temp_db().await;
+        let pool = db_manager.pool();
+
+        // Simulate a meeting that existed *before* this migration: inserted with
+        // duration_seconds left NULL, same as every pre-migration row would be.
+        let meeting_id = format!("meeting-{}", Uuid::new_v4());
+        let now = Utc::now();
+        sqlx::query(
+            "INSERT INTO meetings (id, title, created_at, updated_at, folder_path, duration_seconds)
+             VALUES (?, ?, ?, ?, NULL, NULL)",
+        )
+        .bind(&meeting_id)
+        .bind("Pre-existing Meeting")
+        .bind(now)
+        .bind(now)
+        .execute(pool)
+        .await
+        .unwrap();
+
+        for (start, end) in [(0.0, 4.0), (10.0, 15.5)] {
+            sqlx::query(
+                "INSERT INTO transcripts (id, meeting_id, transcript, timestamp, audio_start_time, audio_end_time, duration)
+                 VALUES (?, ?, 'x', '00:00:00', ?, ?, ?)",
+            )
+            .bind(format!("transcript-{}", Uuid::new_v4()))
+            .bind(&meeting_id)
+            .bind(start)
+            .bind(end)
+            .bind(end - start)
+            .execute(pool)
+            .await
+            .unwrap();
+        }
+
+        // Re-run exactly the backfill statement from the migration - proves it
+        // correctly derives duration_seconds for rows that predate this change.
+        sqlx::query(
+            "UPDATE meetings
+             SET duration_seconds = (
+                 SELECT MAX(t.audio_end_time) - MIN(t.audio_start_time)
+                 FROM transcripts t
+                 WHERE t.meeting_id = meetings.id
+             )
+             WHERE EXISTS (SELECT 1 FROM transcripts t WHERE t.meeting_id = meetings.id)",
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+
+        let rows = MeetingsRepository::get_meetings(pool).await.unwrap();
+        let row = rows.iter().find(|r| r.id == meeting_id).unwrap();
+        assert_eq!(row.duration_seconds, Some(15.5));
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
 }

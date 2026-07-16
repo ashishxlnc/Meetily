@@ -22,6 +22,21 @@ impl TranscriptsRepository {
             .unwrap_or_else(Utc::now)
     }
 
+    /// Computes total recording duration from a set of transcript segments'
+    /// audio-relative offsets, mirroring the guard previously applied at read
+    /// time in `api_get_meetings` (end must be strictly after start).
+    pub(crate) fn compute_duration_seconds(transcripts: &[TranscriptSegment]) -> Option<f64> {
+        let start = transcripts
+            .iter()
+            .filter_map(|s| s.audio_start_time)
+            .fold(f64::INFINITY, f64::min);
+        let end = transcripts
+            .iter()
+            .filter_map(|s| s.audio_end_time)
+            .fold(f64::NEG_INFINITY, f64::max);
+        (end > start).then_some(end - start)
+    }
+
     /// Saves a new meeting and its associated transcript segments.
     /// This function uses a transaction to ensure that either both the meeting
     /// and all its transcripts are saved, or none of them are.
@@ -38,16 +53,18 @@ impl TranscriptsRepository {
 
         let started_at = Self::resolve_meeting_start_time(&folder_path);
         let saved_at = Utc::now();
+        let duration_seconds = Self::compute_duration_seconds(transcripts);
 
         // 1. Create the new meeting
         let result = sqlx::query(
-            "INSERT INTO meetings (id, title, created_at, updated_at, folder_path) VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO meetings (id, title, created_at, updated_at, folder_path, duration_seconds) VALUES (?, ?, ?, ?, ?, ?)",
         )
         .bind(&meeting_id)
         .bind(meeting_title)
         .bind(started_at)
         .bind(saved_at)
         .bind(&folder_path)
+        .bind(duration_seconds)
         .execute(&mut *transaction)
         .await;
 

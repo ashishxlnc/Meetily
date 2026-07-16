@@ -43,6 +43,14 @@ interface SidebarItem {
 
 type DateFilterPreset = 'today' | 'week' | 'month' | 'custom' | null;
 
+// The full meeting list is always fetched and filtered/searched over in full
+// (so search and date filters stay accurate regardless of how many meetings
+// exist) - only the DOM render is capped, to bound render cost on accounts
+// with very large meeting histories. "Show more" reveals additional items
+// without any extra fetch.
+const INITIAL_VISIBLE_MEETINGS = 50;
+const MEETINGS_PAGE_SIZE = 50;
+
 interface DateFilterState {
   preset: DateFilterPreset;
   from?: string;
@@ -102,6 +110,7 @@ const Sidebar: React.FC = () => {
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set(['meetings']));
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [dateFilter, setDateFilter] = useState<DateFilterState>({ preset: null });
+  const [visibleMeetingCount, setVisibleMeetingCount] = useState(INITIAL_VISIBLE_MEETINGS);
   const [isFilterOpen, setIsFilterOpen] = useState(false);
   const [showModelSettings, setShowModelSettings] = useState(false);
   const [modelConfig, setModelConfig] = useState<ModelConfig>({
@@ -425,6 +434,39 @@ const Sidebar: React.FC = () => {
 
     return groups;
   }, [filteredSidebarItems, meetingsById, isWithinDateFilter]);
+
+  // Cap the number of meeting items actually rendered to the DOM, without
+  // touching the (already fully filtered/searched) groupedMeetingItems data
+  // itself. Group boundaries are preserved - a group is only truncated, never
+  // reordered - so "Today" / "This Week" / etc. headers stay meaningful.
+  const { visibleGroupedMeetingItems, hasMoreMeetings } = useMemo(() => {
+    let remaining = visibleMeetingCount;
+    const visible: { label: string; items: SidebarItem[] }[] = [];
+    let truncated = false;
+
+    for (const group of groupedMeetingItems) {
+      if (remaining <= 0) {
+        truncated = true;
+        break;
+      }
+      if (group.items.length <= remaining) {
+        visible.push(group);
+        remaining -= group.items.length;
+      } else {
+        visible.push({ label: group.label, items: group.items.slice(0, remaining) });
+        remaining = 0;
+        truncated = true;
+      }
+    }
+
+    return { visibleGroupedMeetingItems: visible, hasMoreMeetings: truncated };
+  }, [groupedMeetingItems, visibleMeetingCount]);
+
+  // A new search or date filter changes the result set entirely, so start
+  // back at the top rather than keeping a stale "how many shown so far" count.
+  useEffect(() => {
+    setVisibleMeetingCount(INITIAL_VISIBLE_MEETINGS);
+  }, [searchQuery, dateFilter]);
 
   const handleDelete = async (itemId: string) => {
     console.log('Deleting item:', itemId);
@@ -964,14 +1006,24 @@ const Sidebar: React.FC = () => {
                     <div key={`${item.id}-children`} className="mx-3">
                       {item.id === 'meetings' ? (
                         groupedMeetingItems.length > 0 ? (
-                          groupedMeetingItems.map(group => (
-                            <div key={group.label} className="mb-2">
-                              <div className="px-3 pt-2 pb-1 text-xs font-semibold text-gray-400 uppercase tracking-wide">
-                                {group.label}
+                          <>
+                            {visibleGroupedMeetingItems.map(group => (
+                              <div key={group.label} className="mb-2">
+                                <div className="px-3 pt-2 pb-1 text-xs font-semibold text-gray-400 uppercase tracking-wide">
+                                  {group.label}
+                                </div>
+                                {group.items.map(child => renderItem(child, 1))}
                               </div>
-                              {group.items.map(child => renderItem(child, 1))}
-                            </div>
-                          ))
+                            ))}
+                            {hasMoreMeetings && (
+                              <button
+                                onClick={() => setVisibleMeetingCount(count => count + MEETINGS_PAGE_SIZE)}
+                                className="w-full py-2 mb-2 text-xs font-medium text-gray-500 hover:text-gray-700 hover:bg-gray-50 rounded-md transition-colors"
+                              >
+                                Show more
+                              </button>
+                            )}
+                          </>
                         ) : (
                           <div className="px-3 py-6 text-sm text-gray-400 text-center">
                             No meetings match your filters
