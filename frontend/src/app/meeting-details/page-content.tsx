@@ -8,7 +8,9 @@ import { invoke } from '@tauri-apps/api/core';
 import { toast } from 'sonner';
 import { TranscriptPanel } from '@/components/MeetingDetails/TranscriptPanel';
 import { SummaryPanel } from '@/components/MeetingDetails/SummaryPanel';
+import { MeetingTagsEditor } from '@/components/MeetingDetails/MeetingTagsEditor';
 import { ModelConfig } from '@/components/ModelSettingsModal';
+import { FileText, Sparkles } from 'lucide-react';
 
 // Custom hooks
 import { useMeetingData } from '@/hooks/meeting-details/useMeetingData';
@@ -57,6 +59,11 @@ export default function PageContent({
   const [customPrompt, setCustomPrompt] = useState<string>('');
   const [isRecording] = useState(false);
   const [summaryResponse] = useState<SummaryResponse | null>(null);
+  const [activeTab, setActiveTab] = useState<'transcript' | 'summary'>('transcript');
+  // Portal target: each panel renders its own action buttons (unchanged
+  // internal state/logic) into this shared slot in the tab bar, gated by its
+  // own isActive prop so only the visible tab's buttons ever appear here.
+  const [actionsSlot, setActionsSlot] = useState<HTMLDivElement | null>(null);
 
   // Ref to store the modal open function from SummaryGeneratorButtonGroup
   const openModelSettingsRef = useRef<(() => void) | null>(null);
@@ -170,8 +177,36 @@ export default function PageContent({
       transition={{ duration: 0.3, ease: 'easeOut' }}
       className="flex flex-col h-screen bg-gray-50"
     >
+      {/* Tab bar: switches which panel is visible; both stay mounted (see
+          isActive below) so summary generation / transcript pagination
+          in-flight work isn't interrupted by switching tabs. */}
+      <div className="flex items-center gap-1 px-4 pt-2 border-b border-gray-200 bg-white">
+        {([
+          ['transcript', 'Transcript', FileText],
+          ['summary', 'Summary', Sparkles],
+        ] as const).map(([tab, label, Icon]) => (
+          <button
+            key={tab}
+            onClick={() => setActiveTab(tab)}
+            className={`flex items-center gap-1.5 px-3 py-2 text-sm font-medium border-b-2 transition-colors ${activeTab === tab
+              ? 'border-blue-600 text-blue-700'
+              : 'border-transparent text-gray-500 hover:text-gray-700'
+              }`}
+          >
+            <Icon className="w-4 h-4" />
+            {label}
+          </button>
+        ))}
+        <div ref={setActionsSlot} className="ml-auto flex items-center gap-2 py-1" />
+      </div>
+
+      {/* Shared across both tabs - rendered once so it doesn't refetch on tab switch. */}
+      <MeetingTagsEditor meetingId={meeting.id} />
+
       <div className="flex flex-1 overflow-hidden">
         <TranscriptPanel
+          isActive={activeTab === 'transcript'}
+          actionsSlot={actionsSlot}
           transcripts={meetingData.transcripts}
           customPrompt={customPrompt}
           onPromptChange={setCustomPrompt}
@@ -193,6 +228,8 @@ export default function PageContent({
           onRefetchTranscripts={onRefetchTranscripts}
         />
         <SummaryPanel
+          isActive={activeTab === 'summary'}
+          actionsSlot={actionsSlot}
           meeting={meeting}
           meetingTitle={meetingData.meetingTitle}
           onTitleChange={meetingData.handleTitleChange}

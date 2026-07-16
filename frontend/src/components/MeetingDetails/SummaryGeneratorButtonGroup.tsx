@@ -10,6 +10,7 @@ import {
 import { VisuallyHidden } from "@/components/ui/visually-hidden"
 import { Button } from '@/components/ui/button';
 import { ButtonGroup } from '@/components/ui/button-group';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -246,65 +247,69 @@ export function SummaryGeneratorButtonGroup({
     <ButtonGroup>
       {/* Generate Summary or Stop button */}
       {isGenerating ? (
-        <Button
-          variant="outline"
-          size="sm"
-          className="bg-gradient-to-r from-red-50 to-orange-50 hover:from-red-100 hover:to-orange-100 border-red-200 xl:px-4"
-          onClick={() => {
-            Analytics.trackButtonClick('stop_summary_generation', 'meeting_details');
-            onStopGeneration();
-          }}
-          title="Stop summary generation"
-        >
-          <Square className="xl:mr-2" size={18} fill="currentColor" />
-          <span className="hidden lg:inline xl:inline">Stop</span>
-        </Button>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              variant="outline"
+              size="icon"
+              className="bg-gradient-to-r from-red-50 to-orange-50 hover:from-red-100 hover:to-orange-100 border-red-200"
+              onClick={() => {
+                Analytics.trackButtonClick('stop_summary_generation', 'meeting_details');
+                onStopGeneration();
+              }}
+            >
+              <Square size={18} fill="currentColor" />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>Stop summary generation</TooltipContent>
+        </Tooltip>
       ) : (
-        <Button
-          variant="outline"
-          size="sm"
-          className="bg-gradient-to-r from-blue-50 to-purple-50 hover:from-blue-100 hover:to-purple-100 border-blue-200 xl:px-4"
-          onClick={() => {
-            Analytics.trackButtonClick('generate_summary', 'meeting_details');
-            checkOllamaModelsAndGenerate();
-          }}
-          disabled={isCheckingModels || isModelConfigLoading}
-          title={
-            isModelConfigLoading
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              variant="outline"
+              size="icon"
+              className="bg-gradient-to-r from-blue-50 to-purple-50 hover:from-blue-100 hover:to-purple-100 border-blue-200"
+              onClick={() => {
+                Analytics.trackButtonClick('generate_summary', 'meeting_details');
+                checkOllamaModelsAndGenerate();
+              }}
+              disabled={isCheckingModels || isModelConfigLoading}
+            >
+              {isCheckingModels || isModelConfigLoading ? (
+                <Loader2 className="animate-spin" size={18} />
+              ) : (
+                <Sparkles size={18} />
+              )}
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>
+            {isModelConfigLoading
               ? 'Loading model configuration...'
               : isCheckingModels
                 ? 'Checking models...'
-                : hasSummary ? 'Regenerate AI Summary' : 'Generate AI Summary'
-          }
-        >
-          {isCheckingModels || isModelConfigLoading ? (
-            <>
-              <Loader2 className="animate-spin xl:mr-2" size={18} />
-              <span className="hidden xl:inline">Processing...</span>
-            </>
-          ) : (
-            <>
-              <Sparkles className="xl:mr-2" size={18} />
-              <span className="hidden lg:inline xl:inline">{hasSummary ? 'Regenerate Summary' : 'Generate Summary'}</span>
-            </>
-          )}
-        </Button>
+                : hasSummary ? 'Regenerate AI Summary' : 'Generate AI Summary'}
+          </TooltipContent>
+        </Tooltip>
       )}
 
       {languageSlot}
 
       {/* Settings button */}
       <Dialog open={settingsDialogOpen} onOpenChange={setSettingsDialogOpen}>
-        <DialogTrigger asChild>
-          <Button
-            variant="outline"
-            size="sm"
-            title="Summary Settings"
-          >
-            <Settings />
-            <span className="hidden lg:inline">AI Model</span>
-          </Button>
-        </DialogTrigger>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <DialogTrigger asChild>
+              <Button
+                variant="outline"
+                size="icon"
+              >
+                <Settings />
+              </Button>
+            </DialogTrigger>
+          </TooltipTrigger>
+          <TooltipContent>Summary Settings</TooltipContent>
+        </Tooltip>
         <DialogContent
           aria-describedby={undefined}
         >
@@ -327,16 +332,19 @@ export function SummaryGeneratorButtonGroup({
       {/* Template selector dropdown */}
       {availableTemplates.length > 0 && (
         <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button
-              variant="outline"
-              size="sm"
-              title="Select summary template"
-            >
-              <FileText />
-              <span className="hidden lg:inline">Template</span>
-            </Button>
-          </DropdownMenuTrigger>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  variant="outline"
+                  size="icon"
+                >
+                  <FileText />
+                </Button>
+              </DropdownMenuTrigger>
+            </TooltipTrigger>
+            <TooltipContent>Select summary template</TooltipContent>
+          </Tooltip>
           <DropdownMenuContent align="end">
             {availableTemplates.map((template) => (
               <DropdownMenuItem

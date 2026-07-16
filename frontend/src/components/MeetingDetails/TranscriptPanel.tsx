@@ -5,6 +5,7 @@ import { TranscriptView } from '@/components/TranscriptView';
 import { VirtualizedTranscriptView } from '@/components/VirtualizedTranscriptView';
 import { TranscriptButtonGroup } from './TranscriptButtonGroup';
 import { useMemo } from 'react';
+import { createPortal } from 'react-dom';
 
 interface TranscriptPanelProps {
   transcripts: Transcript[];
@@ -28,6 +29,14 @@ interface TranscriptPanelProps {
   meetingId?: string;
   meetingFolderPath?: string | null;
   onRefetchTranscripts?: () => Promise<void>;
+
+  // Tab visibility: when used in a tabbed layout, the inactive tab stays
+  // mounted (CSS-hidden, not unmounted) so pagination/loading state isn't
+  // lost when switching tabs. Defaults to always-visible for other callers.
+  isActive?: boolean;
+  // DOM node to portal the action buttons into (e.g. a shared tab-bar slot),
+  // instead of rendering them inline in this panel's own header.
+  actionsSlot?: HTMLDivElement | null;
 }
 
 export function TranscriptPanel({
@@ -48,6 +57,8 @@ export function TranscriptPanel({
   meetingId,
   meetingFolderPath,
   onRefetchTranscripts,
+  isActive = true,
+  actionsSlot,
 }: TranscriptPanelProps) {
   // Convert transcripts to segments if pagination is not used but we want virtualization
   const convertedSegments = useMemo(() => {
@@ -64,19 +75,20 @@ export function TranscriptPanel({
     }));
   }, [transcripts, usePagination, segments]);
 
+  const actionButtons = (
+    <TranscriptButtonGroup
+      transcriptCount={usePagination ? (totalCount ?? convertedSegments.length) : (transcripts?.length || 0)}
+      onCopyTranscript={onCopyTranscript}
+      onOpenMeetingFolder={onOpenMeetingFolder}
+      meetingId={meetingId}
+      meetingFolderPath={meetingFolderPath}
+      onRefetchTranscripts={onRefetchTranscripts}
+    />
+  );
+
   return (
-    <div className="hidden md:flex md:w-1/4 lg:w-1/3 min-w-0 border-r border-gray-200 bg-white flex-col relative shrink-0">
-      {/* Title area */}
-      <div className="p-4 border-b border-gray-200">
-        <TranscriptButtonGroup
-          transcriptCount={usePagination ? (totalCount ?? convertedSegments.length) : (transcripts?.length || 0)}
-          onCopyTranscript={onCopyTranscript}
-          onOpenMeetingFolder={onOpenMeetingFolder}
-          meetingId={meetingId}
-          meetingFolderPath={meetingFolderPath}
-          onRefetchTranscripts={onRefetchTranscripts}
-        />
-      </div>
+    <div className={isActive ? "flex w-full min-w-0 bg-white flex-col relative" : "hidden"}>
+      {isActive && actionsSlot && createPortal(actionButtons, actionsSlot)}
 
       {/* Transcript content - use virtualized view for better performance */}
       <div className="flex-1 overflow-hidden pb-4">

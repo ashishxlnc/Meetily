@@ -2,6 +2,7 @@
 
 import { Button } from '@/components/ui/button';
 import { ButtonGroup } from '@/components/ui/button-group';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { Copy, Save, Loader2, Search, FolderOpen } from 'lucide-react';
 import Analytics from '@/lib/analytics';
 
@@ -27,51 +28,48 @@ export function SummaryUpdaterButtonGroup({
   return (
     <ButtonGroup>
       {/* Save button */}
-      <Button
-        variant="outline"
-        size="sm"
-        className={`${isDirty ? 'bg-green-200' : ""}`}
-        title={isSaving ? "Saving" : "Save Changes"}
-        onClick={() => {
-          Analytics.trackButtonClick('save_changes', 'meeting_details');
-          onSave();
-        }}
-        disabled={isSaving}
-      >
-        {isSaving ? (
-          <>
-            <Loader2 className="animate-spin" />
-            <span className="hidden lg:inline">Saving...</span>
-          </>
-        ) : (
-          <>
-            <Save />
-            <span className="hidden lg:inline">Save</span>
-          </>
-        )}
-      </Button>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button
+            variant="outline"
+            size="icon"
+            className={`${isDirty ? 'bg-green-200' : ""}`}
+            onClick={() => {
+              Analytics.trackButtonClick('save_changes', 'meeting_details');
+              onSave();
+            }}
+            disabled={isSaving}
+          >
+            {isSaving ? <Loader2 className="animate-spin" /> : <Save />}
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent>{isSaving ? "Saving" : "Save Changes"}</TooltipContent>
+      </Tooltip>
 
       {/* Copy button */}
-      <Button
-        variant="outline"
-        size="sm"
-        title="Copy Summary"
-        onClick={() => {
-          Analytics.trackButtonClick('copy_summary', 'meeting_details');
-          onCopy();
-        }}
-        disabled={!hasSummary}
-        className="cursor-pointer"
-      >
-        <Copy />
-        <span className="hidden lg:inline">Copy</span>
-      </Button>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button
+            variant="outline"
+            size="icon"
+            onClick={() => {
+              Analytics.trackButtonClick('copy_summary', 'meeting_details');
+              onCopy();
+            }}
+            disabled={!hasSummary}
+            className="cursor-pointer"
+          >
+            <Copy />
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent>Copy Summary</TooltipContent>
+      </Tooltip>
 
       {/* Find button */}
       {/* {onFind && (
         <Button
           variant="outline"
-          size="sm"
+          size="icon"
           title="Find in Summary"
           onClick={() => {
             Analytics.trackButtonClick('find_in_summary', 'meeting_details');

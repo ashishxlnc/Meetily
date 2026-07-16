@@ -9,10 +9,12 @@ import { SummaryGeneratorButtonGroup } from './SummaryGeneratorButtonGroup';
 import { SummaryUpdaterButtonGroup } from './SummaryUpdaterButtonGroup';
 import Analytics from '@/lib/analytics';
 import { useEffect, useRef, useState, RefObject } from 'react';
+import { createPortal } from 'react-dom';
 import { toast } from 'sonner';
-import { Languages, ChevronDown } from 'lucide-react';
+import { Languages } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Popover, PopoverTrigger, PopoverContent } from '@/components/ui/popover';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { LanguagePickerPopover } from '@/components/LanguagePickerPopover';
 import { useRecentLanguages } from '@/hooks/useRecentLanguages';
 import { labelForCode } from '@/lib/summary-languages';
@@ -60,6 +62,14 @@ interface SummaryPanelProps {
   onTemplateSelect: (templateId: string, templateName: string) => void;
   isModelConfigLoading?: boolean;
   onOpenModelSettings?: (openFn: () => void) => void;
+
+  // Tab visibility: when used in a tabbed layout, the inactive tab stays
+  // mounted (CSS-hidden, not unmounted) so summary generation/polling isn't
+  // interrupted when switching tabs. Defaults to always-visible for other callers.
+  isActive?: boolean;
+  // DOM node to portal the header action buttons into (e.g. a shared tab-bar
+  // slot), instead of rendering them inline in this panel's own header.
+  actionsSlot?: HTMLDivElement | null;
 }
 
 export function SummaryPanel({
@@ -95,7 +105,9 @@ export function SummaryPanel({
   selectedTemplate,
   onTemplateSelect,
   isModelConfigLoading = false,
-  onOpenModelSettings
+  onOpenModelSettings,
+  isActive = true,
+  actionsSlot,
 }: SummaryPanelProps) {
   const [summaryLang, setSummaryLang] = useState<string | null>(null);
   const [summaryLangStorage, setSummaryLangStorage] = useState<SummaryLanguageStorage>('metadata');
@@ -226,18 +238,22 @@ export function SummaryPanel({
 
   const languageSlot = (
     <Popover open={langPickerOpen} onOpenChange={setLangPickerOpen}>
-      <PopoverTrigger asChild>
-        <Button
-          variant="outline"
-          size="sm"
-          title={`Summary language: ${effectiveLangLabel}${isLocalFallbackLanguage ? ' (saved on this device)' : ''}`}
-          aria-label="Set summary language"
-        >
-          <Languages size={18} />
-          <span className="hidden lg:inline">{effectiveLangLabel}</span>
-          <ChevronDown size={14} className="text-gray-400" />
-        </Button>
-      </PopoverTrigger>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <PopoverTrigger asChild>
+            <Button
+              variant="outline"
+              size="icon"
+              aria-label="Set summary language"
+            >
+              <Languages size={18} />
+            </Button>
+          </PopoverTrigger>
+        </TooltipTrigger>
+        <TooltipContent>
+          {`Summary language: ${effectiveLangLabel}${isLocalFallbackLanguage ? ' (saved on this device)' : ''}`}
+        </TooltipContent>
+      </Tooltip>
       <PopoverContent
         align="end"
         className="w-auto p-0 border-0 shadow-none bg-transparent"
@@ -252,60 +268,47 @@ export function SummaryPanel({
     </Popover>
   );
 
+  // Steady-state header actions (only meaningful once a summary exists and
+  // isn't mid-generation - the loading/empty-state button groups further
+  // below are part of their own body content, not this header, and are
+  // left exactly where they are).
+  const headerActionButtons = aiSummary && !isSummaryLoading && (
+    <div className="flex items-center gap-2">
+      <SummaryGeneratorButtonGroup
+        modelConfig={modelConfig}
+        setModelConfig={setModelConfig}
+        onSaveModelConfig={onSaveModelConfig}
+        onGenerateSummary={onGenerateSummary}
+        onStopGeneration={onStopGeneration}
+        customPrompt={customPrompt}
+        summaryStatus={summaryStatus}
+        availableTemplates={availableTemplates}
+        selectedTemplate={selectedTemplate}
+        onTemplateSelect={onTemplateSelect}
+        hasTranscripts={transcripts.length > 0}
+        hasSummary={!!aiSummary}
+        isModelConfigLoading={isModelConfigLoading}
+        onOpenModelSettings={onOpenModelSettings}
+        languageSlot={languageSlot}
+      />
+      <SummaryUpdaterButtonGroup
+        isSaving={isSaving}
+        isDirty={isTitleDirty || (summaryRef.current?.isDirty || false)}
+        onSave={onSaveAll}
+        onCopy={onCopySummary}
+        onFind={() => {
+          // TODO: Implement find in summary functionality
+          console.log('Find in summary clicked');
+        }}
+        onOpenFolder={onOpenFolder}
+        hasSummary={!!aiSummary}
+      />
+    </div>
+  );
+
   return (
-    <div className="flex-1 min-w-0 flex flex-col bg-white overflow-hidden">
-      {/* Title area */}
-      <div className="p-4 border-b border-gray-200">
-        {/* <EditableTitle
-          title={meetingTitle}
-          isEditing={isEditingTitle}
-          onStartEditing={onStartEditTitle}
-          onFinishEditing={onFinishEditTitle}
-          onChange={onTitleChange}
-        /> */}
-
-        {/* Button groups - only show when summary exists */}
-        {aiSummary && !isSummaryLoading && (
-          <div className="flex items-center justify-center w-full pt-0 gap-2">
-            {/* Left-aligned: Summary Generator Button Group */}
-            <div className="flex-shrink-0">
-              <SummaryGeneratorButtonGroup
-                modelConfig={modelConfig}
-                setModelConfig={setModelConfig}
-                onSaveModelConfig={onSaveModelConfig}
-                onGenerateSummary={onGenerateSummary}
-                onStopGeneration={onStopGeneration}
-                customPrompt={customPrompt}
-                summaryStatus={summaryStatus}
-                availableTemplates={availableTemplates}
-                selectedTemplate={selectedTemplate}
-                onTemplateSelect={onTemplateSelect}
-                hasTranscripts={transcripts.length > 0}
-                hasSummary={!!aiSummary}
-                isModelConfigLoading={isModelConfigLoading}
-                onOpenModelSettings={onOpenModelSettings}
-                languageSlot={languageSlot}
-              />
-            </div>
-
-            {/* Right-aligned: Summary Updater Button Group */}
-            <div className="flex-shrink-0">
-              <SummaryUpdaterButtonGroup
-                isSaving={isSaving}
-                isDirty={isTitleDirty || (summaryRef.current?.isDirty || false)}
-                onSave={onSaveAll}
-                onCopy={onCopySummary}
-                onFind={() => {
-                  // TODO: Implement find in summary functionality
-                  console.log('Find in summary clicked');
-                }}
-                onOpenFolder={onOpenFolder}
-                hasSummary={!!aiSummary}
-              />
-            </div>
-          </div>
-        )}
-      </div>
+    <div className={isActive ? "flex-1 min-w-0 flex flex-col bg-white overflow-hidden" : "hidden"}>
+      {isActive && actionsSlot && headerActionButtons && createPortal(headerActionButtons, actionsSlot)}
 
       {isSummaryLoading ? (
         <div className="flex flex-col h-full">
