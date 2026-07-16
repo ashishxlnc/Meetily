@@ -10,6 +10,7 @@ use crate::{
         repositories::{
             meeting::{MeetingListRow, MeetingsRepository},
             setting::SettingsRepository,
+            tag::{TagInfo, TagsRepository},
             transcript::TranscriptsRepository,
         },
     },
@@ -34,6 +35,8 @@ pub struct Meeting {
     pub created_at: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub duration_seconds: Option<f64>,
+    #[serde(default)]
+    pub tags: Vec<TagInfo>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -340,13 +343,26 @@ pub async fn api_get_meetings<R: Runtime>(
         Ok(meeting_rows) => {
             log_info!("Successfully got {} meetings", meeting_rows.len());
 
+            // Separate, small query against meeting_tags/tags - kept out of
+            // get_meetings itself so that query stays a flat, JOIN-free read.
+            let mut tags_by_meeting = TagsRepository::get_tags_for_all_meetings(pool)
+                .await
+                .unwrap_or_else(|e| {
+                    log_error!("Error getting meeting tags (continuing without tags): {}", e);
+                    HashMap::new()
+                });
+
             let result: Vec<Meeting> = meeting_rows
                 .into_iter()
-                .map(|m| Meeting {
-                    id: m.id,
-                    title: m.title,
-                    created_at: m.created_at.0.to_rfc3339(),
-                    duration_seconds: m.duration_seconds,
+                .map(|m| {
+                    let tags = tags_by_meeting.remove(&m.id).unwrap_or_default();
+                    Meeting {
+                        id: m.id,
+                        title: m.title,
+                        created_at: m.created_at.0.to_rfc3339(),
+                        duration_seconds: m.duration_seconds,
+                        tags,
+                    }
                 })
                 .collect();
             Ok(result)
@@ -356,6 +372,116 @@ pub async fn api_get_meetings<R: Runtime>(
             Err(e.to_string())
         }
     }
+}
+
+#[tauri::command]
+pub async fn api_list_tags(state: tauri::State<'_, AppState>) -> Result<Vec<TagInfo>, String> {
+    TagsRepository::list_tags(state.db_manager.pool())
+        .await
+        .map_err(|e| {
+            log_error!("Error listing tags: {}", e);
+            e.to_string()
+        })
+}
+
+#[tauri::command]
+pub async fn api_create_tag(
+    state: tauri::State<'_, AppState>,
+    name: String,
+    color: Option<String>,
+) -> Result<TagInfo, String> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err("Tag name cannot be empty".to_string());
+    }
+    TagsRepository::create_tag(state.db_manager.pool(), trimmed, color)
+        .await
+        .map_err(|e| {
+            log_error!("Error creating tag '{}': {}", trimmed, e);
+            e.to_string()
+        })
+}
+
+#[tauri::command]
+pub async fn api_rename_tag(
+    state: tauri::State<'_, AppState>,
+    tag_id: String,
+    name: String,
+) -> Result<(), String> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err("Tag name cannot be empty".to_string());
+    }
+    TagsRepository::rename_tag(state.db_manager.pool(), &tag_id, trimmed)
+        .await
+        .map_err(|e| {
+            log_error!("Error renaming tag '{}': {}", tag_id, e);
+            e.to_string()
+        })
+}
+
+#[tauri::command]
+pub async fn api_delete_tag(
+    state: tauri::State<'_, AppState>,
+    tag_id: String,
+) -> Result<(), String> {
+    TagsRepository::delete_tag(state.db_manager.pool(), &tag_id)
+        .await
+        .map_err(|e| {
+            log_error!("Error deleting tag '{}': {}", tag_id, e);
+            e.to_string()
+        })
+}
+
+#[tauri::command]
+pub async fn api_assign_meeting_tag(
+    state: tauri::State<'_, AppState>,
+    meeting_id: String,
+    tag_id: String,
+) -> Result<(), String> {
+    TagsRepository::assign_tag(state.db_manager.pool(), &meeting_id, &tag_id)
+        .await
+        .map_err(|e| {
+            log_error!(
+                "Error assigning tag '{}' to meeting '{}': {}",
+                tag_id,
+                meeting_id,
+                e
+            );
+            e.to_string()
+        })
+}
+
+#[tauri::command]
+pub async fn api_remove_meeting_tag(
+    state: tauri::State<'_, AppState>,
+    meeting_id: String,
+    tag_id: String,
+) -> Result<(), String> {
+    TagsRepository::remove_tag(state.db_manager.pool(), &meeting_id, &tag_id)
+        .await
+        .map_err(|e| {
+            log_error!(
+                "Error removing tag '{}' from meeting '{}': {}",
+                tag_id,
+                meeting_id,
+                e
+            );
+            e.to_string()
+        })
+}
+
+#[tauri::command]
+pub async fn api_get_meeting_tags(
+    state: tauri::State<'_, AppState>,
+    meeting_id: String,
+) -> Result<Vec<TagInfo>, String> {
+    TagsRepository::get_tags_for_meeting(state.db_manager.pool(), &meeting_id)
+        .await
+        .map_err(|e| {
+            log_error!("Error getting tags for meeting '{}': {}", meeting_id, e);
+            e.to_string()
+        })
 }
 
 #[tauri::command]

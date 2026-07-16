@@ -281,7 +281,14 @@ async fn delete_meeting_with_transaction(
         .execute(&mut *transaction)
         .await?;
 
-    // 4. Finally, delete the meeting
+    // 4. Delete from meeting_tags (tag assignments) - foreign keys are not
+    // enforced on this connection, so this must be explicit, same as above.
+    sqlx::query("DELETE FROM meeting_tags WHERE meeting_id = ?")
+        .bind(meeting_id)
+        .execute(&mut *transaction)
+        .await?;
+
+    // 5. Finally, delete the meeting
     let result = sqlx::query("DELETE FROM meetings WHERE id = ?")
         .bind(meeting_id)
         .execute(&mut *transaction)

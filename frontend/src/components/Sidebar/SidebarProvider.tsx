@@ -15,11 +15,18 @@ interface SidebarItem {
   children?: SidebarItem[];
 }
 
+export interface MeetingTag {
+  id: string;
+  name: string;
+  color?: string | null;
+}
+
 export interface CurrentMeeting {
   id: string;
   title: string;
   created_at?: string;
   duration_seconds?: number | null;
+  tags?: MeetingTag[];
 }
 
 // Search result type for transcript search
@@ -102,7 +109,8 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
           id: meeting.id,
           title: meeting.title,
           created_at: meeting.created_at,
-          duration_seconds: meeting.duration_seconds ?? null
+          duration_seconds: meeting.duration_seconds ?? null,
+          tags: meeting.tags ?? []
         }));
         setMeetings(transformedMeetings);
         Analytics.trackBackendConnection(true);

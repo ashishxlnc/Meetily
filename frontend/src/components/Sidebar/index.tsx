@@ -1,11 +1,11 @@
 'use client';
 
 import React, { useState, useMemo, useEffect, useCallback } from 'react';
-import { ChevronDown, ChevronRight, File, Settings, ChevronLeftCircle, ChevronRightCircle, Calendar, StickyNote, Home, Trash2, Mic, Square, Plus, Search, Pencil, NotebookPen, SearchIcon, X, Upload, Filter } from 'lucide-react';
+import { ChevronDown, ChevronRight, File, Settings, ChevronLeftCircle, ChevronRightCircle, Calendar, StickyNote, Home, Trash2, Mic, Square, Plus, Search, Pencil, NotebookPen, SearchIcon, X, Upload, Filter, Tag } from 'lucide-react';
 import { format, parseISO, isValid, isToday, isYesterday, isThisWeek, isThisMonth, startOfDay, endOfDay } from 'date-fns';
 import { useRouter, usePathname } from 'next/navigation';
 import { useSidebar } from './SidebarProvider';
-import type { CurrentMeeting } from '@/components/Sidebar/SidebarProvider';
+import type { CurrentMeeting, MeetingTag } from '@/components/Sidebar/SidebarProvider';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { ConfirmationModal } from '../ConfirmationModel/confirmation-modal';
 import { ModelConfig } from '@/components/ModelSettingsModal';
@@ -110,6 +110,8 @@ const Sidebar: React.FC = () => {
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set(['meetings']));
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [dateFilter, setDateFilter] = useState<DateFilterState>({ preset: null });
+  const [selectedTagIds, setSelectedTagIds] = useState<Set<string>>(new Set());
+  const [isTagFilterOpen, setIsTagFilterOpen] = useState(false);
   const [visibleMeetingCount, setVisibleMeetingCount] = useState(INITIAL_VISIBLE_MEETINGS);
   const [isFilterOpen, setIsFilterOpen] = useState(false);
   const [showModelSettings, setShowModelSettings] = useState(false);
@@ -391,6 +393,31 @@ const Sidebar: React.FC = () => {
     return true;
   }, [dateFilter]);
 
+  // Tags available to filter by are derived from whatever's already been
+  // fetched (no separate API call/state to keep in sync) - a tag only shows
+  // up here once at least one meeting carries it.
+  const allTags = useMemo(() => {
+    const byId = new Map<string, MeetingTag>();
+    meetings.forEach(m => (m.tags ?? []).forEach(tag => byId.set(tag.id, tag)));
+    return Array.from(byId.values()).sort((a, b) => a.name.localeCompare(b.name));
+  }, [meetings]);
+
+  // Matches if the meeting carries ANY of the selected tags (OR semantics).
+  const isWithinTagFilter = useCallback((tags?: MeetingTag[]): boolean => {
+    if (selectedTagIds.size === 0) return true;
+    if (!tags || tags.length === 0) return false;
+    return tags.some(tag => selectedTagIds.has(tag.id));
+  }, [selectedTagIds]);
+
+  const toggleTagFilter = useCallback((tagId: string) => {
+    setSelectedTagIds(prev => {
+      const next = new Set(prev);
+      if (next.has(tagId)) next.delete(tagId);
+      else next.add(tagId);
+      return next;
+    });
+  }, []);
+
   const dateFilterLabel = useMemo(() => {
     switch (dateFilter.preset) {
       case 'today': return 'Today';
@@ -414,9 +441,10 @@ const Sidebar: React.FC = () => {
     const meetingsFolder = filteredSidebarItems.find(item => item.id === 'meetings');
     const children = meetingsFolder?.children ?? [];
 
-    const filtered = children.filter(child =>
-      isWithinDateFilter(meetingsById.get(child.id)?.created_at)
-    );
+    const filtered = children.filter(child => {
+      const meeting = meetingsById.get(child.id);
+      return isWithinDateFilter(meeting?.created_at) && isWithinTagFilter(meeting?.tags);
+    });
 
     const groups: { label: string; items: SidebarItem[] }[] = [];
     const indexByLabel = new Map<string, number>();
@@ -433,7 +461,7 @@ const Sidebar: React.FC = () => {
     });
 
     return groups;
-  }, [filteredSidebarItems, meetingsById, isWithinDateFilter]);
+  }, [filteredSidebarItems, meetingsById, isWithinDateFilter, isWithinTagFilter]);
 
   // Cap the number of meeting items actually rendered to the DOM, without
   // touching the (already fully filtered/searched) groupedMeetingItems data
@@ -462,11 +490,11 @@ const Sidebar: React.FC = () => {
     return { visibleGroupedMeetingItems: visible, hasMoreMeetings: truncated };
   }, [groupedMeetingItems, visibleMeetingCount]);
 
-  // A new search or date filter changes the result set entirely, so start
-  // back at the top rather than keeping a stale "how many shown so far" count.
+  // A new search, date filter, or tag filter changes the result set entirely,
+  // so start back at the top rather than keeping a stale "shown so far" count.
   useEffect(() => {
     setVisibleMeetingCount(INITIAL_VISIBLE_MEETINGS);
-  }, [searchQuery, dateFilter]);
+  }, [searchQuery, dateFilter, selectedTagIds]);
 
   const handleDelete = async (itemId: string) => {
     console.log('Deleting item:', itemId);
@@ -954,6 +982,53 @@ const Sidebar: React.FC = () => {
                       </div>
                     </PopoverContent>
                   </Popover>
+
+                  {allTags.length > 0 && (
+                    <Popover open={isTagFilterOpen} onOpenChange={setIsTagFilterOpen}>
+                      <PopoverTrigger asChild>
+                        <button
+                          className={`flex items-center gap-1 px-2 py-1 text-xs rounded-md border transition-colors ${selectedTagIds.size > 0
+                            ? 'border-blue-300 bg-blue-50 text-blue-700'
+                            : 'border-gray-200 text-gray-500 hover:bg-gray-50'
+                            }`}
+                        >
+                          <Tag className="w-3.5 h-3.5" />
+                          <span>{selectedTagIds.size > 0 ? `Tags (${selectedTagIds.size})` : 'Tags'}</span>
+                        </button>
+                      </PopoverTrigger>
+                      <PopoverContent align="start" className="w-64 p-3">
+                        <div className="space-y-3">
+                          <div>
+                            <div className="text-xs font-semibold text-gray-500 mb-1.5">Filter by tag</div>
+                            <div className="flex flex-wrap gap-1">
+                              {allTags.map(tag => (
+                                <button
+                                  key={tag.id}
+                                  onClick={() => toggleTagFilter(tag.id)}
+                                  className={`px-2 py-1 text-xs rounded-md border transition-colors ${selectedTagIds.has(tag.id)
+                                    ? 'bg-blue-600 text-white border-blue-600'
+                                    : 'border-gray-200 text-gray-600 hover:bg-gray-50'
+                                    }`}
+                                  style={selectedTagIds.has(tag.id) && tag.color ? { backgroundColor: tag.color, borderColor: tag.color } : undefined}
+                                >
+                                  {tag.name}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+
+                          {selectedTagIds.size > 0 && (
+                            <button
+                              onClick={() => setSelectedTagIds(new Set())}
+                              className="w-full text-xs text-red-600 hover:text-red-700 pt-1"
+                            >
+                              Clear filter
+                            </button>
+                          )}
+                        </div>
+                      </PopoverContent>
+                    </Popover>
+                  )}
                 </div>
               </div>
             )}
