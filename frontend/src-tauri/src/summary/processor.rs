@@ -280,6 +280,51 @@ pub fn clean_llm_markdown_output(markdown: &str) -> String {
     trimmed.to_string()
 }
 
+/// Returns true if `name` looks like an unfilled template placeholder
+/// rather than a real, model-generated title - e.g. "<Meeting Title>" or
+/// "[AI-Generated Title]". Small/local models sometimes echo the prompt's
+/// own placeholder instruction verbatim instead of synthesizing an actual
+/// title; without this guard that placeholder text gets written to the DB
+/// as the new meeting name, silently replacing a better existing title
+/// with something that reads like nothing happened.
+fn looks_like_placeholder_title(name: &str) -> bool {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return true;
+    }
+
+    // Entirely wrapped in <...> or [...] - this codebase's own prompt
+    // templates use exactly that convention for fill-in-the-blank
+    // placeholders ("# <Add Title here>", "`[AI-Generated Title]`").
+    // Real titles don't come wrapped like this, so the wrapping itself is
+    // disqualifying regardless of the inner text.
+    let is_bracket_wrapped = (trimmed.starts_with('<') && trimmed.ends_with('>'))
+        || (trimmed.starts_with('[') && trimmed.ends_with(']'));
+    if is_bracket_wrapped {
+        return true;
+    }
+
+    // Also reject known generic placeholder phrasing appearing without
+    // brackets (a model may drop the brackets but keep the instruction
+    // text itself). Exact match only, so a real title that merely contains
+    // one of these words/phrases (e.g. "Weekly Meeting Title Review") is
+    // never rejected.
+    const PLACEHOLDER_PHRASES: &[&str] = &[
+        "meeting title",
+        "add title here",
+        "ai-generated title",
+        "your title here",
+        "title here",
+        "insert title",
+        "insert title here",
+        "meeting name",
+        "title",
+        "untitled meeting",
+        "untitled",
+    ];
+    PLACEHOLDER_PHRASES.contains(&trimmed.to_lowercase().as_str())
+}
+
 /// Extracts a meeting name from the document's opening H1 heading.
 ///
 /// Only the first non-blank line is considered - a "# " line appearing
@@ -292,7 +337,8 @@ pub fn clean_llm_markdown_output(markdown: &str) -> String {
 /// larger cloud models: leading whitespace before the '#', a missing
 /// space after it ("#Title"), and a title wrapped in **bold** with no
 /// heading marker at all (some local models render the title that way
-/// instead of using markdown headings).
+/// instead of using markdown headings). Unfilled template placeholders
+/// (see `looks_like_placeholder_title`) are rejected rather than used.
 ///
 /// # Arguments
 /// * `markdown` - Markdown content
@@ -314,7 +360,10 @@ pub fn extract_meeting_name_from_markdown(markdown: &str) -> Option<String> {
     };
 
     let name = candidate.trim().trim_matches('*').trim();
-    (!name.is_empty()).then(|| name.to_string())
+    if name.is_empty() || looks_like_placeholder_title(name) {
+        return None;
+    }
+    Some(name.to_string())
 }
 
 /// Generates a complete meeting summary with conditional chunking strategy
@@ -964,6 +1013,75 @@ mod tests {
         assert_eq!(
             extract_meeting_name_from_markdown("\n\n  \n# Team Standup\n## Key Points"),
             Some("Team Standup".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_title_rejects_angle_bracket_placeholder() {
+        // Real observed gemma3:1b output: echoes the placeholder verbatim
+        // instead of generating a real title.
+        assert_eq!(
+            extract_meeting_name_from_markdown("# <Meeting Title>\n\n**Summary**\n\nfoo"),
+            None
+        );
+    }
+
+    #[test]
+    fn extract_title_rejects_square_bracket_placeholder() {
+        assert_eq!(
+            extract_meeting_name_from_markdown("# [AI-Generated Title]\nbody"),
+            None
+        );
+    }
+
+    #[test]
+    fn extract_title_rejects_add_title_here_placeholder() {
+        assert_eq!(
+            extract_meeting_name_from_markdown("# <Add Title here>\nbody"),
+            None
+        );
+    }
+
+    #[test]
+    fn extract_title_rejects_generic_phrase_without_brackets() {
+        assert_eq!(extract_meeting_name_from_markdown("# Meeting Title\nbody"), None);
+    }
+
+    #[test]
+    fn extract_title_rejects_bare_word_title() {
+        assert_eq!(extract_meeting_name_from_markdown("# Title\nbody"), None);
+    }
+
+    #[test]
+    fn extract_title_rejects_untitled_placeholder() {
+        assert_eq!(extract_meeting_name_from_markdown("# Untitled\nbody"), None);
+    }
+
+    #[test]
+    fn extract_title_accepts_real_title_containing_generic_words_as_substring() {
+        // Contains "meeting title" as a substring but isn't an exact-match
+        // placeholder - a real, specific title and must not be rejected.
+        assert_eq!(
+            extract_meeting_name_from_markdown("# Weekly Meeting Title Review Sync\nbody"),
+            Some("Weekly Meeting Title Review Sync".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_title_accepts_real_title_with_partial_angle_bracket() {
+        // Not fully wrapped in <...> - a legitimate title that merely
+        // contains angle brackets somewhere must still be accepted.
+        assert_eq!(
+            extract_meeting_name_from_markdown("# Q3 <Planning> Sync\nbody"),
+            Some("Q3 <Planning> Sync".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_title_rejects_placeholder_wrapped_in_bold() {
+        assert_eq!(
+            extract_meeting_name_from_markdown("# **<Meeting Title>**\nbody"),
+            None
         );
     }
 }
