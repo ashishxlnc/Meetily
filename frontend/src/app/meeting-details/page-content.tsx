@@ -22,6 +22,8 @@ import { useConfig } from '@/contexts/ConfigContext';
 
 export default function PageContent({
   meeting,
+  activeTab,
+  onActiveTabChange,
   summaryData,
   shouldAutoGenerate = false,
   onAutoGenerateComplete,
@@ -36,6 +38,11 @@ export default function PageContent({
   onLoadMore,
 }: {
   meeting: any;
+  // Controlled by the parent route component (not local state here) so the
+  // selected tab survives switching between meetings, since this component
+  // unmounts/remounts while the next meeting's data loads.
+  activeTab: 'transcript' | 'summary';
+  onActiveTabChange: (tab: 'transcript' | 'summary') => void;
   summaryData: Summary | null;
   shouldAutoGenerate?: boolean;
   onAutoGenerateComplete?: () => void;
@@ -59,7 +66,6 @@ export default function PageContent({
   const [customPrompt, setCustomPrompt] = useState<string>('');
   const [isRecording] = useState(false);
   const [summaryResponse] = useState<SummaryResponse | null>(null);
-  const [activeTab, setActiveTab] = useState<'transcript' | 'summary'>('transcript');
   // Portal target: each panel renders its own action buttons (unchanged
   // internal state/logic) into this shared slot in the tab bar, gated by its
   // own isActive prop so only the visible tab's buttons ever appear here.
@@ -179,24 +185,37 @@ export default function PageContent({
     >
       {/* Tab bar: switches which panel is visible; both stay mounted (see
           isActive below) so summary generation / transcript pagination
-          in-flight work isn't interrupted by switching tabs. */}
-      <div className="flex items-center gap-1 px-4 pt-2 border-b border-gray-200 bg-white">
-        {([
-          ['transcript', 'Transcript', FileText],
-          ['summary', 'Summary', Sparkles],
-        ] as const).map(([tab, label, Icon]) => (
-          <button
-            key={tab}
-            onClick={() => setActiveTab(tab)}
-            className={`flex items-center gap-1.5 px-3 py-2 text-sm font-medium border-b-2 transition-colors ${activeTab === tab
-              ? 'border-blue-600 text-blue-700'
-              : 'border-transparent text-gray-500 hover:text-gray-700'
-              }`}
-          >
-            <Icon className="w-4 h-4" />
-            {label}
-          </button>
-        ))}
+          in-flight work isn't interrupted by switching tabs. activeTab is
+          owned by the parent route component, not local state here, so the
+          selection survives switching between meetings. */}
+      <div className="flex items-center gap-2 px-4 py-2.5 border-b border-gray-200 bg-white">
+        <div className="flex items-center gap-1 bg-gray-100 rounded-lg p-1">
+          {([
+            ['transcript', 'Transcript', FileText],
+            ['summary', 'Summary', Sparkles],
+          ] as const).map(([tab, label, Icon]) => (
+            <button
+              key={tab}
+              onClick={() => onActiveTabChange(tab)}
+              className={`relative flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${activeTab === tab
+                ? 'text-gray-900'
+                : 'text-gray-500 hover:text-gray-700'
+                }`}
+            >
+              {activeTab === tab && (
+                <motion.div
+                  layoutId="meeting-details-active-tab-bg"
+                  className="absolute inset-0 bg-white rounded-md shadow-sm"
+                  transition={{ type: 'spring', bounce: 0.2, duration: 0.4 }}
+                />
+              )}
+              <span className="relative flex items-center gap-1.5">
+                <Icon className={`w-4 h-4 ${activeTab === tab ? 'text-blue-600' : ''}`} />
+                {label}
+              </span>
+            </button>
+          ))}
+        </div>
         <div ref={setActionsSlot} className="ml-auto flex items-center gap-2 py-1" />
       </div>
 

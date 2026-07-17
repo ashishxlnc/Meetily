@@ -87,7 +87,7 @@ export function TranscriptPanel({
   );
 
   return (
-    <div className={isActive ? "flex w-full min-w-0 bg-white flex-col relative" : "hidden"}>
+    <div className={isActive ? "flex w-full min-w-0 bg-white flex-col relative animate-in fade-in duration-200" : "hidden"}>
       {isActive && actionsSlot && createPortal(actionButtons, actionsSlot)}
 
       {/* Transcript content - use virtualized view for better performance */}

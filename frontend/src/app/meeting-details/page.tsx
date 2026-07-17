@@ -32,6 +32,9 @@ function MeetingDetailsContent() {
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [shouldAutoGenerate, setShouldAutoGenerate] = useState<boolean>(false);
   const [hasCheckedAutoGen, setHasCheckedAutoGen] = useState<boolean>(false);
+  // Lifted above PageContent (which unmounts/remounts while a meeting loads)
+  // so the selected tab survives switching between meetings.
+  const [activeTab, setActiveTab] = useState<'transcript' | 'summary'>('transcript');
 
   // Use pagination hook for efficient transcript loading
   const {
@@ -360,6 +363,8 @@ function MeetingDetailsContent() {
 
   return <PageContent
     meeting={meetingDetails}
+    activeTab={activeTab}
+    onActiveTabChange={setActiveTab}
     summaryData={meetingSummary}
     shouldAutoGenerate={shouldAutoGenerate}
     onAutoGenerateComplete={() => setShouldAutoGenerate(false)}

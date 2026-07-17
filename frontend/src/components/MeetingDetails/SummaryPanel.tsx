@@ -307,7 +307,7 @@ export function SummaryPanel({
   );
 
   return (
-    <div className={isActive ? "flex-1 min-w-0 flex flex-col bg-white overflow-hidden" : "hidden"}>
+    <div className={isActive ? "flex-1 min-w-0 flex flex-col bg-white overflow-hidden animate-in fade-in duration-200" : "hidden"}>
       {isActive && actionsSlot && headerActionButtons && createPortal(headerActionButtons, actionsSlot)}
 
       {isSummaryLoading ? (
