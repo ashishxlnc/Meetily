@@ -280,7 +280,19 @@ pub fn clean_llm_markdown_output(markdown: &str) -> String {
     trimmed.to_string()
 }
 
-/// Extracts meeting name from the first heading in markdown
+/// Extracts a meeting name from the document's opening H1 heading.
+///
+/// Only the first non-blank line is considered - a "# " line appearing
+/// later belongs to a section, not the title (matches the leading-only
+/// semantics `strip_title_if_present` in service.rs already relies on).
+/// A second '#' means this is a subheading ("## Key Points"), not the
+/// title, and is intentionally rejected rather than misread as one.
+///
+/// Tolerates formatting drift small/local models are more prone to than
+/// larger cloud models: leading whitespace before the '#', a missing
+/// space after it ("#Title"), and a title wrapped in **bold** with no
+/// heading marker at all (some local models render the title that way
+/// instead of using markdown headings).
 ///
 /// # Arguments
 /// * `markdown` - Markdown content
@@ -288,10 +300,21 @@ pub fn clean_llm_markdown_output(markdown: &str) -> String {
 /// # Returns
 /// Meeting name if found, None otherwise
 pub fn extract_meeting_name_from_markdown(markdown: &str) -> Option<String> {
-    markdown
-        .lines()
-        .find(|line| line.starts_with("# "))
-        .map(|line| line.trim_start_matches("# ").trim().to_string())
+    let first_line = markdown.lines().find(|line| !line.trim().is_empty())?.trim();
+
+    let candidate = if let Some(rest) = first_line.strip_prefix('#') {
+        if rest.starts_with('#') {
+            return None;
+        }
+        rest.trim_start()
+    } else if first_line.len() > 4 && first_line.starts_with("**") && first_line.ends_with("**") {
+        &first_line[2..first_line.len() - 2]
+    } else {
+        return None;
+    };
+
+    let name = candidate.trim().trim_matches('*').trim();
+    (!name.is_empty()).then(|| name.to_string())
 }
 
 /// Generates a complete meeting summary with conditional chunking strategy
@@ -852,5 +875,95 @@ mod tests {
     fn underscore_locale_variant_returns_none() {
         // OS locale APIs (notably macOS) may emit "en_GB" with underscore.
         assert_eq!(resolve_cached_english(Some("body"), Some("en_GB")), None);
+    }
+
+    #[test]
+    fn extract_title_from_exact_h1() {
+        assert_eq!(
+            extract_meeting_name_from_markdown("# Team Standup\n\n## Key Points\nfoo"),
+            Some("Team Standup".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_title_tolerates_leading_whitespace() {
+        assert_eq!(
+            extract_meeting_name_from_markdown("  # Team Standup\n## Key Points"),
+            Some("Team Standup".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_title_tolerates_missing_space_after_hash() {
+        assert_eq!(
+            extract_meeting_name_from_markdown("#Team Standup\n## Key Points"),
+            Some("Team Standup".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_title_strips_bold_wrapping_on_h1() {
+        assert_eq!(
+            extract_meeting_name_from_markdown("# **Team Standup**\n## Key Points"),
+            Some("Team Standup".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_title_from_bold_only_first_line_with_no_heading_marker() {
+        // Some small/local models render the title without any markdown heading.
+        assert_eq!(
+            extract_meeting_name_from_markdown("**Team Standup**\n\nSome body text."),
+            Some("Team Standup".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_title_rejects_h2_first_line_as_not_the_title() {
+        // Model skipped the title and jumped straight into a section - must
+        // NOT be mistaken for the meeting name.
+        assert_eq!(
+            extract_meeting_name_from_markdown("## Key Points\nfoo\nbar"),
+            None
+        );
+    }
+
+    #[test]
+    fn extract_title_rejects_h3_first_line() {
+        assert_eq!(extract_meeting_name_from_markdown("### Notes\nbody"), None);
+    }
+
+    #[test]
+    fn extract_title_ignores_mid_document_h1() {
+        // A "# " line appearing after real content is a section, not the title.
+        let input = "Some intro paragraph\n\n# H1 on line 3\n## Section\nbody";
+        assert_eq!(extract_meeting_name_from_markdown(input), None);
+    }
+
+    #[test]
+    fn extract_title_returns_none_for_plain_prose_first_line() {
+        assert_eq!(
+            extract_meeting_name_from_markdown("Just a summary with no heading at all."),
+            None
+        );
+    }
+
+    #[test]
+    fn extract_title_returns_none_for_empty_input() {
+        assert_eq!(extract_meeting_name_from_markdown(""), None);
+        assert_eq!(extract_meeting_name_from_markdown("   \n\n  "), None);
+    }
+
+    #[test]
+    fn extract_title_returns_none_for_empty_heading() {
+        assert_eq!(extract_meeting_name_from_markdown("# \nbody"), None);
+    }
+
+    #[test]
+    fn extract_title_skips_leading_blank_lines() {
+        assert_eq!(
+            extract_meeting_name_from_markdown("\n\n  \n# Team Standup\n## Key Points"),
+            Some("Team Standup".to_string())
+        );
     }
 }
